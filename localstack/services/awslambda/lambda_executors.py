@@ -443,12 +443,7 @@ class LambdaExecutorReuseContainers(LambdaExecutorContainers):
 
                 dns = config.LAMBDA_DOCKER_DNS
                 dns_str = '--dns="%s"' % dns if dns else ''
-
-                mount_volume = not config.LAMBDA_REMOTE_DOCKER
-                lambda_cwd_on_host = Util.get_host_path_for_path_in_docker(lambda_cwd)
-                if (':' in lambda_cwd and '\\' in lambda_cwd):
-                    lambda_cwd_on_host = Util.format_windows_path(lambda_cwd_on_host)
-                mount_volume_str = '-v "%s":/var/task' % lambda_cwd_on_host if mount_volume else ''
+                mount_volume_str = self.mount_volumes_str(lambda_cwd)
 
                 # Create and start the container
                 LOG.debug('Creating container: %s' % container_name)
@@ -472,7 +467,7 @@ class LambdaExecutorReuseContainers(LambdaExecutorContainers):
                 LOG.debug(cmd)
                 run(cmd)
 
-                if not mount_volume:
+                if not config.LAMBDA_REMOTE_DOCKER:
                     LOG.debug('Copying files to container "%s" from "%s".' % (container_name, lambda_cwd))
                     cmd = (
                         '%s cp'
@@ -507,6 +502,15 @@ class LambdaExecutorReuseContainers(LambdaExecutorContainers):
                 % (entry_point, container_name, container_network))
 
             return ContainerInfo(container_name, entry_point)
+
+    def mount_volumes_str(self, lambda_cwd):
+        # LOG.debug('ANDU DEBUG inside super mount_vols and lambda_cwd is: "%s"' % lambda_cwd)
+        mount_volume = not config.LAMBDA_REMOTE_DOCKER
+        lambda_cwd_on_host = Util.get_host_path_for_path_in_docker(lambda_cwd)
+        if (':' in lambda_cwd and '\\' in lambda_cwd):
+            lambda_cwd_on_host = Util.format_windows_path(lambda_cwd_on_host)
+
+        return '-v "%s":/var/task' % lambda_cwd_on_host if mount_volume else ''
 
     def destroy_docker_container(self, func_arn):
         """
@@ -665,6 +669,27 @@ class LambdaExecutorReuseContainers(LambdaExecutorContainers):
         :return: A docker compatible name for the arn.
         """
         return 'localstack_lambda_' + re.sub(r'[^a-zA-Z0-9_.-]', '_', func_arn)
+
+
+class LambdaExecutorReuseContainersExtras(LambdaExecutorReuseContainers):
+    def additional_volume_str(self, mount_str):
+        # LOG.debug('ANDU DEBUG: inside add_mount in Extras with mount_str: "%s" from super' % mount_str)
+        for path in set(os.environ.get('LAMBDA_MOUNTS', '').split(':')):
+            LOG.debug('ANDU DEBUG additional path: "%s": ' % path)
+            mount_str += ' -v "%s":/var/task/"%s"' % (path, os.path.basename(path))
+
+        return mount_str
+
+    def mounts(f):
+        def decorator(self, lambda_cwd):
+            volumes_str = f(self, lambda_cwd)
+            return self.additional_volume_str(volumes_str)
+
+        return decorator
+
+    @mounts
+    def mount_volumes_str(self, lambda_cwd):
+        return super().mount_volumes_str(lambda_cwd)
 
 
 class LambdaExecutorSeparateContainers(LambdaExecutorContainers):
@@ -879,10 +904,12 @@ class Util:
 EXECUTOR_LOCAL = LambdaExecutorLocal()
 EXECUTOR_CONTAINERS_SEPARATE = LambdaExecutorSeparateContainers()
 EXECUTOR_CONTAINERS_REUSE = LambdaExecutorReuseContainers()
+EXECUTOR_INTEGRATOR = LambdaExecutorReuseContainersExtras()
 DEFAULT_EXECUTOR = EXECUTOR_CONTAINERS_SEPARATE
 # the keys of AVAILABLE_EXECUTORS map to the LAMBDA_EXECUTOR config variable
 AVAILABLE_EXECUTORS = {
     'local': EXECUTOR_LOCAL,
     'docker': EXECUTOR_CONTAINERS_SEPARATE,
-    'docker-reuse': EXECUTOR_CONTAINERS_REUSE
+    'docker-reuse': EXECUTOR_CONTAINERS_REUSE,
+    'docker-integrator': EXECUTOR_INTEGRATOR
 }
